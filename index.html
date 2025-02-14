@@ -311,11 +311,11 @@
 
                 // Fetch both model files in parallel.
                 const [modelResponse, modelDataResponse] = await Promise.all([
-                    fetch('https://huggingface.co/Xenova/Phi-3-mini-4k-instruct/resolve/main/onnx/model_q4.onnx', {
+                    fetch('https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx', {
                         mode: 'cors',
                         credentials: 'omit',
                     }),
-                    fetch('https://huggingface.co/Xenova/Phi-3-mini-4k-instruct/resolve/main/onnx/model_q4.onnx_data', {
+                    fetch('https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx_data', {
                         mode: 'cors',
                         credentials: 'omit',
                     })
