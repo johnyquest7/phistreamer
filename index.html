@@ -4,9 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Whisper & Phi-3 Transcription System</title>
-  <!-- Use the WebGPU build of onnxruntime-web -->
-  <script type="module" src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/webgpu/ort-webgpu.min.js"></script>
   <style>
+    /* (styles unchanged) */
     body {
       font-family: Arial, sans-serif;
       margin: 0;
@@ -143,7 +142,8 @@
   </main>
 
   <script type="module">
-    // Import the transformers pipeline for Whisper
+    // Import onnxruntime-web's WebGPU module and transformers pipeline.
+    import * as ort from 'onnxruntime-web/webgpu';
     import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.1';
 
     // Global variables
