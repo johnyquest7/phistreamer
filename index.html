@@ -206,8 +206,18 @@
         const totalSizeMB = ((modelBytes.byteLength + externalDataBytes.byteLength) / 1024 / 1024).toFixed(2);
         console.log(`Model size: ${totalSizeMB} MB`);
         // Fetch and parse model config (adjust the URL as needed)
-        const configBytes = await fetchAndCache(baseUrl + 'config.json');
-        const model_config = JSON.parse(new TextDecoder().decode(configBytes));
+        //const configBytes = await fetchAndCache(baseUrl + 'config.json');
+       // const model_config = JSON.parse(new TextDecoder().decode(configBytes));
+
+        // Fallback default config (adjust values as appropriate)
+        const model_config = {
+          num_hidden_layers: 28,      // Adjust to your model's actual number of hidden layers
+          num_key_value_heads: 16,    // Adjust as needed
+          hidden_size: 4096,          // Adjust as needed
+          num_attention_heads: 32,    // Adjust as needed
+          eos_token_id: 2             // Adjust as needed
+        };
+
         
         // Build options using the config
         const opt = {
