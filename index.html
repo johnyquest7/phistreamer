@@ -205,22 +205,45 @@
         // Log model size for debugging
         const totalSizeMB = ((modelBytes.byteLength + externalDataBytes.byteLength) / 1024 / 1024).toFixed(2);
         console.log(`Model size: ${totalSizeMB} MB`);
-
-        // Setup session options: pass the external data with its expected file path
-        const options = {
+        // Fetch and parse model config (adjust the URL as needed)
+        const configBytes = await fetchAndCache(baseUrl + 'config.json');
+        const model_config = JSON.parse(new TextDecoder().decode(configBytes));
+        
+        // Build options using the config
+        const opt = {
           executionProviders: ['webgpu'],
           preferredOutputLocation: {},
-          externalData: [
+          graphOptimizationLevel: 'all'
+        };
+        
+        for (let i = 0; i < model_config.num_hidden_layers; ++i) {
+          opt.preferredOutputLocation[`present.${i}.key`] = 'gpu-buffer';
+          opt.preferredOutputLocation[`present.${i}.value`] = 'gpu-buffer';
+        }
+        
+        if (externalDataBytes !== undefined) {
+          opt.externalData = [
             {
               data: externalDataBytes,
               path: modelFile + '_data',
-            }
-          ],
-          graphOptimizationLevel: 'all'
-        };
+            },
+          ];
+        }
+        
+        ort.env.webgpu.profiling = {};
+        // (Optionally set profiling/logging if needed)
+        // opt.logSeverityLevel = 0;
+        // opt.logVerbosityLevel = 0;
+        // ort.env.logLevel = "verbose";
+        // if (profilerEnabled) {
+        //   opt.enableProfiling = true;
+        //   ort.env.webgpu.profilingMode = 'default';
+        //   ort.env.webgpu.profiling.mode = 'default';
+        // }
+        
+        // Use the same API call as the GitHub example
+        phiModel = await ort.InferenceSession.create(modelBytes, opt);
 
-        phiStatusText.textContent = 'Loading Phi-3 model...';
-        phiModel = await ort.InferenceSessionWebGPU.create(modelBytes, options);
 
         //phiModel = await ort.InferenceSession.create(modelBytes, options);
         phiStatusText.textContent = 'Phi-3 model ready';
