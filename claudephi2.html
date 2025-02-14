@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper & Phi-3 Transcription System</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f4f4f9;
+        }
+        header {
+            background-color: #6200ea;
+            color: white;
+            padding: 1rem;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        main {
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+            max-width: 1200px;
+            width: 95%;
+            padding: 1rem;
+            margin: 1rem auto;
+            background: white;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+        }
+        .left-panel, .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .model-status {
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 5px;
+            background-color: #f8f9fa;
+        }
+        .progress-container {
+            width: 100%;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            transition: width 0.3s ease-in-out;
+        }
+        select, button, textarea {
+            width: 100%;
+            padding: 0.5rem;
+            margin: 0.5rem 0;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        textarea {
+            resize: none;
+            height: 200px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        canvas {
+            width: 100%;
+            height: 100px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Whisper & Phi-3 Transcription System</h1>
+    </header>
+    <main>
+        <div class="left-panel">
+            <div class="model-status">
+                <h3>Model Status</h3>
+                <div id="whisperStatus">
+                    <p>Whisper Model: <span id="whisperStatusText">Not loaded</span></p>
+                    <div class="progress-container">
+                        <div id="whisperProgress" class="progress-bar"></div>
+                    </div>
+                </div>
+                <div id="phiStatus">
+                    <p>Phi-3 Model: <span id="phiStatusText">Not loaded</span></p>
+                    <div class="progress-container">
+                        <div id="phiProgress" class="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <label for="whisperModel">Choose Whisper Model:</label>
+                <select id="whisperModel">
+                    <option value="tiny">Tiny</option>
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                </select>
+            </div>
+            <div>
+                <canvas id="visualizer"></canvas>
+                <div class="button-group">
+                    <button id="startRecord" disabled>Start Recording</button>
+                    <button id="stopRecord" disabled>Stop Recording</button>
+                </div>
+            </div>
+            <div>
+                <label for="transcription">Transcription:</label>
+                <textarea id="transcription" contenteditable="true"></textarea>
+            </div>
+        </div>
+        <div class="right-panel">
+            <div>
+                <label for="aiResponse">AI Response:</label>
+                <textarea id="aiResponse" readonly></textarea>
+            </div>
+            <button id="processText" disabled>Process with Phi-3</button>
+            <button id="copyJSON">Copy as JSON</button>
+        </div>
+    </main>
+
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.1';
+
+        ort.env.wasm.numThreads = 1;
+
+        // Configure environment
+        env.allowLocalModels = true;
+        env.remoteModels = {
+            'Xenova/whisper-tiny': 'https://huggingface.co/Xenova/whisper-tiny/resolve/main/',
+            'Xenova/whisper-small': 'https://huggingface.co/Xenova/whisper-small/resolve/main/',
+            'Xenova/whisper-medium': 'https://huggingface.co/Xenova/whisper-medium/resolve/main/'
+        };
+
+        // Global variables
+        let whisperModel;
+        let phiModel;
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let analyser;
+
+                // Cache keys
+        const PHI_MODEL_CACHE_KEY = 'phi-model-cache';
+        const WHISPER_MODEL_CACHE_KEY = 'whisper-model-cache';
+
+        // UI Elements
+        const whisperStatusText = document.getElementById('whisperStatusText');
+        const whisperProgress = document.getElementById('whisperProgress');
+        const phiStatusText = document.getElementById('phiStatusText');
+        const phiProgress = document.getElementById('phiProgress');
+        const startRecordButton = document.getElementById('startRecord');
+        const stopRecordButton = document.getElementById('stopRecord');
+        const processTextButton = document.getElementById('processText');
+        const transcriptionArea = document.getElementById('transcription');
+        const aiResponseArea = document.getElementById('aiResponse');
+        const visualizer = document.getElementById('visualizer');
+        const copyJSONButton = document.getElementById('copyJSON');
+
+        // Check if IndexedDB is supported
+        const indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
+        
+        // Constants for chunk handling
+        const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+
+        // Initialize IndexedDB with chunk support
+        async function initializeDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open('ModelCache', 2); // Increased version for new schema
+                
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+                
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains('modelChunks')) {
+                        const store = db.createObjectStore('modelChunks', { keyPath: 'id' });
+                        store.createIndex('modelId', 'modelId', { unique: false });
+                    }
+                    if (!db.objectStoreNames.contains('modelMetadata')) {
+                        db.createObjectStore('modelMetadata');
+                    }
+                };
+            });
+        }
+
+        // Store a chunk of model data
+        async function storeModelChunk(modelId, chunkIndex, data) {
+            const db = await initializeDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(['modelChunks'], 'readwrite');
+                const store = transaction.objectStore('modelChunks');
+                const request = store.put({
+                    id: `${modelId}_${chunkIndex}`,
+                    modelId,
+                    chunkIndex,
+                    data
+                });
+                
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        // Store model metadata
+        async function storeModelMetadata(modelId, metadata) {
+            const db = await initializeDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(['modelMetadata'], 'readwrite');
+                const store = transaction.objectStore('modelMetadata');
+                const request = store.put(metadata, modelId);
+                
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        // Get all chunks for a model
+        async function getModelChunks(modelId) {
+            const db = await initializeDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(['modelChunks'], 'readonly');
+                const store = transaction.objectStore('modelChunks');
+                const index = store.index('modelId');
+                const request = index.getAll(IDBKeyRange.only(modelId));
+                
+                request.onsuccess = () => {
+                    const chunks = request.result.sort((a, b) => a.chunkIndex - b.chunkIndex);
+                    resolve(chunks);
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        // Get model metadata
+        async function getModelMetadata(modelId) {
+            const db = await initializeDB();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(['modelMetadata'], 'readonly');
+                const store = transaction.objectStore('modelMetadata');
+                const request = store.get(modelId);
+                
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+        
+
+        // Initialize ONNX Runtime with chunked loading
+        async function initOnnxRuntime() {
+            try {
+                const modelKey = 'phi-model-downloaded';
+                const isModelDownloaded = localStorage.getItem(modelKey) === 'true';
+
+                if (isModelDownloaded) {
+                    phiStatusText.textContent = 'Loading cached Phi-3 model...';
+                    try {
+                        const metadata = await getModelMetadata(PHI_MODEL_CACHE_KEY);
+                        if (metadata) {
+                            const chunks = await getModelChunks(PHI_MODEL_CACHE_KEY);
+                            if (chunks.length > 0) {
+                                // Instead of allocating a huge Uint8Array, create a Blob from the chunks.
+                                const buffers = chunks.map(chunk => new Uint8Array(chunk.data));
+                                const blob = new Blob(buffers, { type: 'application/octet-stream' });
+                                const blobUrl = URL.createObjectURL(blob);
+
+                                // Create the session using the blob URL.
+                                phiModel = await ort.InferenceSession.create(blobUrl, {
+                                    executionProviders: ['wasm'],
+                                    graphOptimizationLevel: 'all',
+                                    enableCpuMemArena: true,
+                                    enableMemPattern: true,
+                                    executionMode: 'sequential'
+                                });
+
+                                phiStatusText.textContent = 'Phi-3 model ready';
+                                phiProgress.style.width = '100%';
+                                processTextButton.disabled = false;
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Cache load failed, downloading model:', e);
+                        localStorage.removeItem(modelKey);
+                    }
+                }
+
+                phiStatusText.textContent = 'Downloading Phi-3 model...';
+
+                // Fetch both model files in parallel.
+                const [modelResponse, modelDataResponse] = await Promise.all([
+                    fetch('https://huggingface.co/Xenova/Phi-3-mini-4k-instruct/resolve/main/onnx/model_q4.onnx', {
+                        mode: 'cors',
+                        credentials: 'omit',
+                    }),
+                    fetch('https://huggingface.co/Xenova/Phi-3-mini-4k-instruct/resolve/main/onnx/model_q4.onnx_data', {
+                        mode: 'cors',
+                        credentials: 'omit',
+                    })
+                ]);
+
+                if (!modelResponse.ok || !modelDataResponse.ok) {
+                    throw new Error('Failed to fetch model files');
+                }
+
+                // Get the total size from the headers.
+                const modelSize = parseInt(modelResponse.headers.get('content-length') || '0');
+                const dataSize = parseInt(modelDataResponse.headers.get('content-length') || '0');
+                const totalSize = modelSize + dataSize;
+
+                // Store metadata for caching.
+                await storeModelMetadata(PHI_MODEL_CACHE_KEY, { totalSize });
+
+                let processedBytes = 0;
+                let chunkIndex = 0;
+
+                // Process and cache the model file.
+                const modelReader = modelResponse.body.getReader();
+                while (true) {
+                    const { done, value } = await modelReader.read();
+                    if (done) break;
+
+                    await storeModelChunk(PHI_MODEL_CACHE_KEY, chunkIndex++, value.buffer);
+                    processedBytes += value.length;
+                    const progress = (processedBytes / totalSize) * 100;
+                    phiProgress.style.width = `${Math.round(progress)}%`;
+                }
+
+                // Process and cache the data file.
+                const dataReader = modelDataResponse.body.getReader();
+                while (true) {
+                    const { done, value } = await dataReader.read();
+                    if (done) break;
+
+                    await storeModelChunk(PHI_MODEL_CACHE_KEY, chunkIndex++, value.buffer);
+                    processedBytes += value.length;
+                    const progress = (processedBytes / totalSize) * 100;
+                    phiProgress.style.width = `${Math.round(progress)}%`;
+                }
+
+                // Retrieve all chunks.
+                const chunks = await getModelChunks(PHI_MODEL_CACHE_KEY);
+
+                // Instead of combining into a giant Uint8Array, create a Blob.
+                const buffers = chunks.map(chunk => new Uint8Array(chunk.data));
+                const blob = new Blob(buffers, { type: 'application/octet-stream' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                // Mark model as downloaded.
+                localStorage.setItem(modelKey, 'true');
+
+                // Create the ONNX inference session using the blob URL.
+                phiModel = await ort.InferenceSession.create(blobUrl, {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'all',
+                    enableCpuMemArena: true,
+                    enableMemPattern: true,
+                    executionMode: 'sequential'
+                });
+
+                phiStatusText.textContent = 'Phi-3 model ready';
+                phiProgress.style.width = '100%';
+                processTextButton.disabled = false;
+            } catch (error) {
+                console.error('Error initializing Phi-3:', error);
+                phiStatusText.textContent = `Error loading Phi-3 model: ${error.message}`;
+                throw error;
+            }
+        }
+
+
+        // Initialize Whisper with local storage flag for caching status
+        async function initWhisper() {
+            try {
+                const selectedModel = document.getElementById('whisperModel').value;
+                const cacheKey = `whisper-${selectedModel}-downloaded`;
+                
+                // Check if model was previously downloaded
+                const isModelDownloaded = localStorage.getItem(cacheKey) === 'true';
+                
+                if (isModelDownloaded) {
+                    whisperStatusText.textContent = 'Loading cached Whisper model...';
+                } else {
+                    whisperStatusText.textContent = 'Downloading Whisper model...';
+                }
+                
+                // The transformers library handles caching internally,
+                // we just need to initialize the pipeline
+                whisperModel = await pipeline('automatic-speech-recognition', `Xenova/whisper-${selectedModel}`, {
+                    progress_callback: (progress) => {
+                        const percent = Math.round(progress.progress * 100);
+                        whisperProgress.style.width = `${percent}%`;
+                    }
+                });
+                
+                // Mark model as downloaded for future reference
+                localStorage.setItem(cacheKey, 'true');
+
+                whisperStatusText.textContent = 'Whisper model ready';
+                whisperProgress.style.width = '100%';
+                startRecordButton.disabled = false;
+            } catch (error) {
+                console.error('Error initializing Whisper:', error);
+                whisperStatusText.textContent = 'Error loading Whisper model';
+            }
+        }
+
+        // Initialize audio recording
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.start();
+                audioChunks = [];
+
+                startRecordButton.disabled = true;
+                stopRecordButton.disabled = false;
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                visualizeAudio();
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                alert('Error accessing microphone');
+            }
+        }
+
+        // Stop recording and process audio
+        async function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                startRecordButton.disabled = false;
+                stopRecordButton.disabled = true;
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await transcribeAudio(audioBlob);
+                };
+            }
+        }
+
+        // Transcribe audio using Whisper
+        async function transcribeAudio(audioBlob) {
+            try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                const offlineContext = new OfflineAudioContext(1, audioBuffer.length, audioBuffer.sampleRate);
+                const source = offlineContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(offlineContext.destination);
+                source.start();
+
+                const renderedBuffer = await offlineContext.startRendering();
+                const result = await whisperModel(renderedBuffer.getChannelData(0), {
+                    language: 'english',
+                    task: 'transcribe'
+                });
+
+                transcriptionArea.value = result.text;
+                processTextButton.disabled = false;
+            } catch (error) {
+                console.error('Transcription error:', error);
+                alert('Error during transcription');
+            }
+        }
+
+        // Process text with Phi-3
+        async function processWithPhi() {
+            try {
+                const inputText = transcriptionArea.value.trim();
+                if (!inputText) {
+                    alert('Please provide some text to process');
+                    return;
+                }
+
+                // Create input tensor
+                const inputTensor = new ort.Tensor('string', [inputText]);
+
+                // Run inference
+                const outputs = await phiModel.run({ input: inputTensor });
+                
+                // Process output
+                const response = outputs.output.data[0];
+                aiResponseArea.value = response;
+            } catch (error) {
+                console.error('Error processing with Phi-3:', error);
+                alert('Error processing text with Phi-3');
+            }
+        }
+
+        // Visualize audio
+        function visualizeAudio() {
+            const canvas = visualizer;
+            const canvasCtx = canvas.getContext('2d');
+            const WIDTH = canvas.width;
+            const HEIGHT = canvas.height;
+
+            analyser.fftSize = 2048;
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+
+            canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+
+            function draw() {
+                requestAnimationFrame(draw);
+                analyser.getByteTimeDomainData(dataArray);
+                canvasCtx.fillStyle = 'rgb(200, 200, 200)';
+                canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+                canvasCtx.lineWidth = 2;
+                canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
+                canvasCtx.beginPath();
+
+                const sliceWidth = WIDTH * 1.0 / bufferLength;
+                let x = 0;
+
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0;
+                    const y = v * HEIGHT / 2;
+
+                    if (i === 0) {
+                        canvasCtx.moveTo(x, y);
+                    } else {
+                        canvasCtx.lineTo(x, y);
+                    }
+
+                    x += sliceWidth;
+                }
+
+                canvasCtx.lineTo(canvas.width, canvas.height / 2);
+                canvasCtx.stroke();
+            }
+
+            draw();
+        }
+
+        // Copy response as JSON
+        copyJSONButton.addEventListener('click', () => {
+            const data = {
+                transcription: transcriptionArea.value,
+                response: aiResponseArea.value
+            };
+            navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+                .then(() => alert('Copied to clipboard!'))
+                .catch(err => console.error('Failed to copy:', err));
+        });
+
+        // Event listeners
+        document.getElementById('whisperModel').addEventListener('change', initWhisper);
+        startRecordButton.addEventListener('click', startRecording);
+        stopRecordButton.addEventListener('click', stopRecording);
+        processTextButton.addEventListener('click', processWithPhi);
+
+        // Initialize models
+        window.addEventListener('load', () => {
+            initWhisper();
+            initOnnxRuntime();
+        });
+    </script>
+</body>
+</html>
