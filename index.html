@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Whisper & Phi-3 Transcription System</title>
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <!-- Use the WebGPU build of onnxruntime-web -->
+  <script type="module" src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/webgpu/ort-webgpu.min.js"></script>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -142,18 +143,8 @@
   </main>
 
   <script type="module">
+    // Import the transformers pipeline for Whisper
     import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.1';
-
-    // Configure environment for Whisper models
-    env.allowLocalModels = true;
-    env.remoteModels = {
-      'Xenova/whisper-tiny': 'https://huggingface.co/Xenova/whisper-tiny/resolve/main/',
-      'Xenova/whisper-small': 'https://huggingface.co/Xenova/whisper-small/resolve/main/',
-      'Xenova/whisper-medium': 'https://huggingface.co/Xenova/whisper-medium/resolve/main/'
-    };
-
-    // Force single-threaded mode to avoid SIMD/threading issues.
-    ort.env.wasm.numThreads = 1;
 
     // Global variables
     let whisperModel;
@@ -176,15 +167,76 @@
     const visualizer = document.getElementById('visualizer');
     const copyJSONButton = document.getElementById('copyJSON');
 
-    // Initialize Whisper model using transformers pipeline
+    // Helper function to fetch and cache model files
+    async function fetchAndCache(url) {
+      try {
+        const cache = await caches.open("onnx");
+        let cachedResponse = await cache.match(url);
+        if (!cachedResponse) {
+          console.log(`${url} (network)`);
+          const buffer = await fetch(url).then(response => response.arrayBuffer());
+          try {
+            await cache.put(url, new Response(buffer));
+          } catch (error) {
+            console.error(error);
+          }
+          return buffer;
+        }
+        console.log(`${url} (cached)`);
+        return await cachedResponse.arrayBuffer();
+      } catch (error) {
+        console.error(`Can't fetch ${url}`, error);
+        throw error;
+      }
+    }
+
+    // Initialize the Phi-3 model using the WebGPU backend and externalData option
+    async function initPhi3() {
+      try {
+        phiStatusText.textContent = 'Downloading Phi-3 model files...';
+        // Base URL for the model files on Hugging Face
+        const baseUrl = 'https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/';
+        const modelFile = 'model_q4f16.onnx';
+        // Fetch the main model file and the external data file
+        const modelBytes = await fetchAndCache(baseUrl + modelFile);
+        const externalDataBytes = await fetchAndCache(baseUrl + modelFile + '_data');
+
+        // Log model size for debugging
+        const totalSizeMB = ((modelBytes.byteLength + externalDataBytes.byteLength) / 1024 / 1024).toFixed(2);
+        console.log(`Model size: ${totalSizeMB} MB`);
+
+        // Setup session options: pass the external data with its expected file path
+        const options = {
+          executionProviders: ['webgpu'],
+          preferredOutputLocation: {},
+          externalData: [
+            {
+              data: externalDataBytes,
+              path: modelFile + '_data',
+            }
+          ],
+          graphOptimizationLevel: 'all'
+        };
+
+        phiStatusText.textContent = 'Loading Phi-3 model...';
+        phiModel = await ort.InferenceSession.create(modelBytes, options);
+        phiStatusText.textContent = 'Phi-3 model ready';
+        phiProgress.style.width = '100%';
+        processTextButton.disabled = false;
+      } catch (error) {
+        console.error('Error initializing Phi-3:', error);
+        phiStatusText.textContent = `Error loading Phi-3 model: ${error.message}`;
+      }
+    }
+
+    // Initialize the Whisper model using transformers pipeline
     async function initWhisper() {
       try {
         const selectedModel = document.getElementById('whisperModel').value;
         const cacheKey = `whisper-${selectedModel}-downloaded`;
-
-        whisperStatusText.textContent = localStorage.getItem(cacheKey) === 'true' ?
-          'Loading cached Whisper model...' :
-          'Downloading Whisper model...';
+        whisperStatusText.textContent = localStorage.getItem(cacheKey) === 'true'
+          ? 'Loading cached Whisper model...'
+          : 'Downloading Whisper model...';
 
         whisperModel = await pipeline('automatic-speech-recognition', `Xenova/whisper-${selectedModel}`, {
           progress_callback: (progress) => {
@@ -203,57 +255,7 @@
       }
     }
 
-    // Initialize Phi-3 model using the approach from the GitHub example
-async function initPhi3() {
-  try {
-    phiStatusText.textContent = 'Downloading Phi-3 model files...';
-
-    // Fetch the main model file
-    const onnxResponse = await fetch(
-      'https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx'
-    );
-    if (!onnxResponse.ok) {
-      throw new Error('Failed to fetch the main ONNX model file.');
-    }
-    const onnxBuffer = await onnxResponse.arrayBuffer();
-
-    // Fetch the external data file
-    const dataResponse = await fetch(
-      'https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx_data'
-    );
-    if (!dataResponse.ok) {
-      throw new Error('Failed to fetch the external data file.');
-    }
-    const dataBuffer = await dataResponse.arrayBuffer();
-
-    // Combine the two buffers into one.
-    // This assumes that simply appending the dataBuffer to onnxBuffer produces a merged model.
-    const mergedBuffer = new Uint8Array(onnxBuffer.byteLength + dataBuffer.byteLength);
-    mergedBuffer.set(new Uint8Array(onnxBuffer), 0);
-    mergedBuffer.set(new Uint8Array(dataBuffer), onnxBuffer.byteLength);
-
-    phiStatusText.textContent = 'Loading merged Phi-3 model...';
-
-    // Create the inference session using the merged buffer.
-    phiModel = await ort.InferenceSession.create(mergedBuffer.buffer, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
-      enableCpuMemArena: true,
-      enableMemPattern: true,
-      executionMode: 'sequential'
-    });
-
-    phiStatusText.textContent = 'Phi-3 model ready';
-    phiProgress.style.width = '100%';
-    processTextButton.disabled = false;
-  } catch (error) {
-    console.error('Error initializing Phi-3:', error);
-    phiStatusText.textContent = `Error loading Phi-3 model: ${error.message}`;
-  }
-}
-
-
-    // Audio recording and transcription functions remain largely the same.
+    // Audio recording and transcription functions remain unchanged
     async function startRecording() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -321,11 +323,7 @@ async function initPhi3() {
           alert('Please provide some text to process');
           return;
         }
-
-        // Create input tensor as per onnxruntime requirements
         const inputTensor = new ort.Tensor('string', [inputText]);
-
-        // Run inference using the Phi-3 model
         const outputs = await phiModel.run({ input: inputTensor });
         const response = outputs.output.data[0];
         aiResponseArea.value = response;
@@ -346,7 +344,6 @@ async function initPhi3() {
       const dataArray = new Uint8Array(bufferLength);
 
       canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
-
       function draw() {
         requestAnimationFrame(draw);
         analyser.getByteTimeDomainData(dataArray);
@@ -389,7 +386,6 @@ async function initPhi3() {
     stopRecordButton.addEventListener('click', stopRecording);
     processTextButton.addEventListener('click', processWithPhi);
 
-    // Initialize models on page load
     window.addEventListener('load', () => {
       initWhisper();
       initPhi3();
