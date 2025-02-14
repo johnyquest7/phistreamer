@@ -204,30 +204,54 @@
     }
 
     // Initialize Phi-3 model using the approach from the GitHub example
-    async function initPhi3() {
-      try {
-        // URL for the Phi-3 model (using the working example's approach)
-        const modelUrl = 'https://huggingface.co/Xenova/Phi-3-mini-4k-instruct/resolve/main/onnx/model_q4.onnx';
-        phiStatusText.textContent = 'Downloading Phi-3 model...';
+async function initPhi3() {
+  try {
+    phiStatusText.textContent = 'Downloading Phi-3 model files...';
 
-        // Instead of custom chunking, we load the model directly via URL.
-        // The working example uses a direct call to create the inference session.
-        phiModel = await ort.InferenceSession.create(modelUrl, {
-          executionProviders: ['wasm'],
-          graphOptimizationLevel: 'all',
-          enableCpuMemArena: true,
-          enableMemPattern: true,
-          executionMode: 'sequential'
-        });
-
-        phiStatusText.textContent = 'Phi-3 model ready';
-        phiProgress.style.width = '100%';
-        processTextButton.disabled = false;
-      } catch (error) {
-        console.error('Error initializing Phi-3:', error);
-        phiStatusText.textContent = `Error loading Phi-3 model: ${error.message}`;
-      }
+    // Fetch the main model file
+    const onnxResponse = await fetch(
+      'https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx'
+    );
+    if (!onnxResponse.ok) {
+      throw new Error('Failed to fetch the main ONNX model file.');
     }
+    const onnxBuffer = await onnxResponse.arrayBuffer();
+
+    // Fetch the external data file
+    const dataResponse = await fetch(
+      'https://huggingface.co/onnx-community/Phi-3.5-mini-instruct-onnx-web/resolve/main/onnx/model_q4f16.onnx_data'
+    );
+    if (!dataResponse.ok) {
+      throw new Error('Failed to fetch the external data file.');
+    }
+    const dataBuffer = await dataResponse.arrayBuffer();
+
+    // Combine the two buffers into one.
+    // This assumes that simply appending the dataBuffer to onnxBuffer produces a merged model.
+    const mergedBuffer = new Uint8Array(onnxBuffer.byteLength + dataBuffer.byteLength);
+    mergedBuffer.set(new Uint8Array(onnxBuffer), 0);
+    mergedBuffer.set(new Uint8Array(dataBuffer), onnxBuffer.byteLength);
+
+    phiStatusText.textContent = 'Loading merged Phi-3 model...';
+
+    // Create the inference session using the merged buffer.
+    phiModel = await ort.InferenceSession.create(mergedBuffer.buffer, {
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
+      enableCpuMemArena: true,
+      enableMemPattern: true,
+      executionMode: 'sequential'
+    });
+
+    phiStatusText.textContent = 'Phi-3 model ready';
+    phiProgress.style.width = '100%';
+    processTextButton.disabled = false;
+  } catch (error) {
+    console.error('Error initializing Phi-3:', error);
+    phiStatusText.textContent = `Error loading Phi-3 model: ${error.message}`;
+  }
+}
+
 
     // Audio recording and transcription functions remain largely the same.
     async function startRecording() {
